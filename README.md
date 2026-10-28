@@ -128,7 +128,7 @@ pip install -e '.[test]'
 pytest
 ```
 
-The 42 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
+The 43 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
 
 ## Limitations
 

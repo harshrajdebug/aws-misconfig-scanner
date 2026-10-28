@@ -69,3 +69,12 @@ def test_scp_denial_is_named(ctx, monkeypatch):
     (finding,) = run(ctx, [CHECKS["ec2-ebs-default-encryption"]])
     assert finding.status is Status.ERROR
     assert finding.detail.startswith("UnauthorizedOperation: blocked by a service control policy")
+
+
+def test_profile_without_region_uses_first_scan_region(capsys, monkeypatch):
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    code = main(["--regions", "ap-southeast-2", "--checks", "ec2-ebs-default-encryption", "--format", "json"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert {f["region"] for f in out["findings"]} == {"ap-southeast-2"}

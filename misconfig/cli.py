@@ -77,6 +77,11 @@ def main(argv: list[str] | None = None) -> int:
         p.error(str(exc))
 
     session = boto3.session.Session(profile_name=args.profile)
+    if not session.region_name:
+        # STS and Organizations need a region. Use the first one asked for, so a profile
+        # without a configured region still works.
+        first = next((r.strip() for r in (args.regions or "").split(",") if r.strip() and r.strip() != "all"), None)
+        session = boto3.session.Session(profile_name=args.profile, region_name=first or "us-east-1")
     account_ids = [a.strip() for a in args.accounts.split(",") if a.strip()] if args.accounts else None
     try:
         targets = resolve(session, account_ids, args.org, args.role_name, args.external_id)
