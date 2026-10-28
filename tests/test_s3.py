@@ -39,6 +39,17 @@ def test_block_public_access(scan):
     assert r[_arn("partial")] == (Status.FAIL, "not enabled at bucket or account level: RestrictPublicBuckets")
 
 
+def test_account_level_block_public_access_check(scan, ctx):
+    resource = f"arn:aws:s3:::account/{ctx.account_id}"
+    status, detail = scan("s3-account-block-public-access")[resource]
+    assert status is Status.FAIL and "BlockPublicAcls" in detail
+    _bucket("locked", bpa=FULL_BPA)
+    # Bucket-level settings do not satisfy the account-level control.
+    assert scan("s3-account-block-public-access")[resource][0] is Status.FAIL
+    client("s3control").put_public_access_block(AccountId=ctx.account_id, PublicAccessBlockConfiguration=FULL_BPA)
+    assert scan("s3-account-block-public-access")[resource] == (Status.PASS, "all four settings enabled for the account")
+
+
 def test_account_level_block_public_access_covers_buckets(scan, ctx):
     _bucket("open")
     client("s3control").put_public_access_block(AccountId=ctx.account_id, PublicAccessBlockConfiguration=FULL_BPA)

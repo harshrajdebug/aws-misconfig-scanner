@@ -77,8 +77,21 @@ def _is_anyone(principal) -> bool:
     return isinstance(principal, dict) and "*" in _as_list(principal.get("AWS", []))
 
 
+@check("s3-account-block-public-access", "Account-level S3 Block Public Access is enabled", "s3", Severity.HIGH,
+       "S3.1", "2.1.4", "2.1.4",
+       "Turn on all four Block Public Access settings at the account level.", scope="global")
+def account_block_public_access(ctx: ScanContext, region: str):
+    account = _account_bpa(ctx)
+    missing = [k for k in BPA_KEYS if not account.get(k)]
+    resource = f"arn:aws:s3:::account/{ctx.account_id}"
+    if missing:
+        yield Status.FAIL, resource, "not enabled at account level: " + ", ".join(missing)
+    else:
+        yield Status.PASS, resource, "all four settings enabled for the account"
+
+
 @check("s3-block-public-access", "S3 buckets have Block Public Access enabled", "s3", Severity.HIGH,
-       "S3.1/S3.8", "2.1.4", "2.1.4",
+       "S3.8", "2.1.4", "2.1.4",
        "Turn on all four Block Public Access settings for the account, or for each bucket.", scope="global")
 def block_public_access(ctx: ScanContext, region: str):
     for name, bucket_region in _buckets(ctx):

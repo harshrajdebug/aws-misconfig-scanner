@@ -1,6 +1,6 @@
 # aws-misconfig-scanner
 
-A read-only Python scanner for AWS security misconfigurations. It runs 29 checks across IAM, S3, EC2/VPC, CloudTrail, KMS and RDS, and maps each one to its AWS Security Hub control and to the matching requirement in the CIS AWS Foundations Benchmark v5.0.0 and v3.0.0. It scans one account or every account in an AWS Organization.
+A read-only Python scanner for AWS security misconfigurations. It runs 30 checks across IAM, S3, EC2/VPC, CloudTrail, KMS and RDS, and maps each one to its AWS Security Hub control and to the matching requirement in the CIS AWS Foundations Benchmark v5.0.0 and v3.0.0. It scans one account or every account in an AWS Organization.
 
 Each result says what is wrong, on which resource, and how to fix it. A check that cannot run because a permission is missing is reported as ERROR, so a gap in access never reads as a pass.
 
@@ -97,7 +97,8 @@ For an organization:
 | `rds-public-access` | CRITICAL | RDS.2 | 2.2.3 | 2.3.3 | RDS instances are not publicly accessible |
 | `rds-encryption` | HIGH | RDS.3 | 2.2.1 | 2.3.1 | RDS instances are encrypted at rest |
 | `rds-minor-version-upgrade` | LOW | RDS.13 | 2.2.2 | 2.3.2 | RDS automatic minor version upgrades are on |
-| `s3-block-public-access` | HIGH | S3.1/S3.8 | 2.1.4 | 2.1.4 | S3 buckets have Block Public Access enabled |
+| `s3-account-block-public-access` | HIGH | S3.1 | 2.1.4 | 2.1.4 | Account-level S3 Block Public Access is enabled |
+| `s3-block-public-access` | HIGH | S3.8 | 2.1.4 | 2.1.4 | S3 buckets have Block Public Access enabled |
 | `s3-public-bucket` | CRITICAL | S3.2/S3.3 | - | - | No S3 bucket is open to the public |
 | `s3-tls-only` | MEDIUM | S3.5 | 2.1.1 | 2.1.1 | S3 bucket policies deny requests without TLS |
 | `s3-mfa-delete` | LOW | S3.20 | 2.1.2 | 2.1.2 | S3 buckets have MFA delete enabled |
@@ -106,11 +107,20 @@ The Security Hub and CIS numbers come from AWS's mapping table in [CIS AWS Found
 
 Some behaviour worth knowing:
 
+- **Block Public Access** is checked twice, as Security Hub does: once for the account setting (S3.1) and once per bucket, where a bucket counts as covered by its own setting or the account's (S3.8).
 - **Public S3 buckets** account for Block Public Access at both bucket and account level. A bucket with a public policy fails only if `RestrictPublicBuckets` is off, and a public ACL fails only if `IgnorePublicAcls` is off.
 - **SSH and RDP exposure** covers "all traffic" rules and port ranges that include 22 or 3389, not only rules for exactly those ports. Network ACLs are evaluated in rule-number order, so a deny entry placed before a broad allow protects the port.
 - **CloudTrail** accepts classic and advanced event selectors. A trail with no selectors counts as logging all management events, which is the CloudTrail default.
 - **Root MFA** passes when the root user has no password, access keys or signing certificates, which is how accounts look after centralized root access management removes root credentials. The live run below found this case.
 - **KMS rotation** skips keys that cannot rotate: AWS managed, disabled, asymmetric, and imported key material.
+
+## Validation against Prowler
+
+On 29 Oct 2026 the scanner and [Prowler](https://github.com/prowler-cloud/prowler) 5.46.0 ran against the same live account and region, using Prowler's equivalent checks (with `--scan-unused-services`, so resources not in use are evaluated too).
+
+- 17 checks produced results in both tools, and all 17 agreed on pass or fail.
+- 12 checks could not be compared because the account had nothing for them to evaluate (no IAM users, KMS keys, instances or databases) or because Prowler skipped root checks for a root user without credentials. The EC2, KMS and RDS checks among them were verified separately against real resources, as described under Limitations.
+- The first comparison found one real gap: the bucket-level Block Public Access check claimed the Security Hub S3.1 mapping, which is the account-level setting. It is now two checks, `s3-account-block-public-access` (S3.1) and `s3-block-public-access` (S3.8).
 
 ## Use in CI
 
@@ -128,7 +138,7 @@ pip install -e '.[test]'
 pytest
 ```
 
-The 43 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
+The 44 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
 
 ## Limitations
 
