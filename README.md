@@ -27,7 +27,7 @@ $ python examples/demo_lab.py
 ## Usage
 
 ```bash
-pip install .
+pip install .            # or pip install '.[login]' for profiles created by `aws login`
 misconfig --profile audit --regions all
 misconfig --services s3,iam --format json > findings.json
 misconfig --list-checks
@@ -53,6 +53,8 @@ misconfig --accounts 111111111111,222222222222 --role-name MisconfigScannerRole 
 | `--fail-on SEVERITY` | exit 1 if any check fails at that severity or above, for CI |
 
 Account-wide checks (IAM, S3, the multi-region CloudTrail check) run once per account. Regional checks run in every selected region, and `--regions all` is resolved separately in each account because opt-in regions differ.
+
+Account-wide calls go to the profile's region, or to the first region you scan if the profile has none. Accounts under a service control policy that denies most regions still work: scan the allowed regions with `--regions`, and any call an SCP blocks is reported as an ERROR that says so.
 
 In a multi-account scan, the account you are signed in to is scanned with your own credentials, and every other account through the role. Each finding carries its account id, the text report groups results by account, and the JSON output adds a summary per account.
 
@@ -125,11 +127,11 @@ pip install -e '.[test]'
 pytest
 ```
 
-The 39 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
+The 41 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
 
 ## Limitations
 
-- Tested against moto, not yet against a live account. moto follows the AWS APIs closely but not exactly; for example, it returns no event selectors at all for a new trail.
+- The test suite runs against moto, which follows the AWS APIs closely but not exactly; for example, it returns no event selectors at all for a new trail. The scanner has also been run against one live account, a new account whose service control policy allows a single region, where the first run showed that account-wide calls must not be hard-coded to us-east-1. Organization scans have only been tested in moto.
 - The root MFA check reports whether MFA is on, not whether it is a hardware device (Security Hub IAM.6).
 - Results reflect the API at scan time. The IAM credential report can be up to four hours old.
 

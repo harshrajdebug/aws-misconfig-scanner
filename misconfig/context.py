@@ -15,10 +15,12 @@ _RETRY = Config(retries={"max_attempts": 10, "mode": "adaptive"})
 class ScanContext:
     """Holds the boto3 session and caches clients and account-wide data for one scan."""
 
-    def __init__(self, session: boto3.session.Session, regions: list[str], global_region: str = "us-east-1"):
+    def __init__(self, session: boto3.session.Session, regions: list[str], global_region: str | None = None):
         self.session = session
         self.regions = regions
-        self.global_region = global_region
+        # Account-wide calls go to the profile's own region. Accounts whose service control
+        # policies deny every region but a few cannot reach a hard-coded us-east-1.
+        self.global_region = global_region or session.region_name or "us-east-1"
         self._clients: dict[tuple[str, str], object] = {}
 
     def client(self, service: str, region: str | None = None):
@@ -51,3 +53,11 @@ class ScanContext:
 
 def error_code(exc: ClientError) -> str:
     return exc.response.get("Error", {}).get("Code", "")
+
+
+def describe_error(exc: ClientError) -> str:
+    """Error detail for a finding, naming a service control policy when one caused the denial."""
+    message = str(exc)
+    if "service control policy" in message:
+        return f"{error_code(exc)}: blocked by a service control policy (explicit deny). {message}"
+    return f"{error_code(exc)}: {message}"

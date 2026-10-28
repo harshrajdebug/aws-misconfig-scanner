@@ -3,7 +3,7 @@ from __future__ import annotations
 from botocore.exceptions import BotoCoreError, ClientError
 
 from . import checks  # noqa: F401  (registers checks)
-from .context import ScanContext, error_code
+from .context import ScanContext, describe_error
 from .models import Check, Finding, Status
 from .registry import CHECKS
 
@@ -50,7 +50,7 @@ def _run(ctx: ScanContext, selected: list[Check]) -> list[Finding]:
                     findings.append(_finding(chk, status, resource, label, detail))
             except ClientError as exc:
                 # Report the gap instead of letting a missing permission read as a pass.
-                findings.append(_finding(chk, Status.ERROR, "-", label, f"{error_code(exc)}: {exc}"))
+                findings.append(_finding(chk, Status.ERROR, "-", label, describe_error(exc)))
             except BotoCoreError as exc:
                 findings.append(_finding(chk, Status.ERROR, "-", label, str(exc)))
     return findings

@@ -29,7 +29,8 @@ def _scan_target(target: Target, regions: str | None, selected: list[Check]) -> 
     if target.session is None:
         return [assume_error_finding(target)]
     try:
-        ctx = ScanContext(target.session, _regions(target.session, regions))
+        scan_regions = _regions(target.session, regions)
+        ctx = ScanContext(target.session, scan_regions, global_region=target.session.region_name or scan_regions[0])
     except (ClientError, BotoCoreError) as exc:
         target.error = f"could not list regions: {exc}"
         return [assume_error_finding(target)]

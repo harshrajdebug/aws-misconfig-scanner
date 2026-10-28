@@ -43,3 +43,29 @@ def test_cli_passes_when_nothing_at_threshold(capsys):
 def test_every_check_has_mappings_and_remediation():
     for c in CHECKS.values():
         assert c.securityhub and c.remediation, c.id
+
+
+def test_global_calls_use_the_profile_region():
+    import boto3
+
+    from misconfig.context import ScanContext
+
+    ctx = ScanContext(boto3.session.Session(region_name="ap-southeast-2"), ["ap-southeast-2"])
+    assert ctx.global_region == "ap-southeast-2"
+    assert ctx.client("cloudtrail").meta.region_name == "ap-southeast-2"
+
+
+def test_scp_denial_is_named(ctx, monkeypatch):
+    msg = ("User: arn:aws:sts::1:assumed-role/r/s is not authorized to perform: ec2:GetEbsEncryptionByDefault "
+           "with an explicit deny in a service control policy: arn:aws:organizations::2:policy/o-x/p-y")
+
+    class Denied:
+        def __getattr__(self, name):
+            def call(*args, **kwargs):
+                raise ClientError({"Error": {"Code": "UnauthorizedOperation", "Message": msg}}, name)
+            return call
+
+    monkeypatch.setattr(ctx, "client", lambda *a, **k: Denied())
+    (finding,) = run(ctx, [CHECKS["ec2-ebs-default-encryption"]])
+    assert finding.status is Status.ERROR
+    assert finding.detail.startswith("UnauthorizedOperation: blocked by a service control policy")
