@@ -1,6 +1,6 @@
 # aws-misconfig-scanner
 
-A read-only Python scanner for AWS security misconfigurations. It runs 30 checks across IAM, S3, EC2/VPC, CloudTrail, KMS and RDS, and maps each one to its AWS Security Hub control and to the matching requirement in the CIS AWS Foundations Benchmark v5.0.0 and v3.0.0. It scans one account or every account in an AWS Organization.
+A read-only Python scanner for AWS security misconfigurations. It runs 32 checks across IAM, S3, EC2/VPC, CloudTrail, KMS and RDS, and maps each one to its AWS Security Hub control and to the matching requirement in the CIS AWS Foundations Benchmark v5.0.0 and v3.0.0. It scans one account or every account in an AWS Organization.
 
 Each result says what is wrong, on which resource, and how to fix it. A check that cannot run because a permission is missing is reported as ERROR, so a gap in access never reads as a pass.
 
@@ -93,6 +93,7 @@ For an organization:
 | `iam-user-attached-policies` | LOW | IAM.2 | 1.14 | 1.15 | IAM users get permissions only through groups or roles |
 | `iam-cloudshell-full-access` | MEDIUM | IAM.27 | 1.21 | 1.22 | No identity has AWSCloudShellFullAccess |
 | `iam-full-admin-policy` | HIGH | IAM.1 | - | - | No attached customer managed policy allows *:* |
+| `iam-inline-admin-policy` | HIGH | - | - | - | No inline policy allows *:* |
 | `kms-key-rotation` | MEDIUM | KMS.4 | 3.6 | 3.6 | Customer managed symmetric KMS keys rotate |
 | `rds-public-access` | CRITICAL | RDS.2 | 2.2.3 | 2.3.3 | RDS instances are not publicly accessible |
 | `rds-encryption` | HIGH | RDS.3 | 2.2.1 | 2.3.1 | RDS instances are encrypted at rest |
@@ -102,6 +103,7 @@ For an organization:
 | `s3-public-bucket` | CRITICAL | S3.2/S3.3 | - | - | No S3 bucket is open to the public |
 | `s3-tls-only` | MEDIUM | S3.5 | 2.1.1 | 2.1.1 | S3 bucket policies deny requests without TLS |
 | `s3-mfa-delete` | LOW | S3.20 | 2.1.2 | 2.1.2 | S3 buckets have MFA delete enabled |
+| `s3-access-point-block-public-access` | CRITICAL | S3.19 | - | - | S3 access points have Block Public Access enabled |
 
 The Security Hub and CIS numbers come from AWS's mapping table in [CIS AWS Foundations Benchmark in Security Hub CSPM](https://docs.aws.amazon.com/securityhub/latest/userguide/cis-aws-foundations-benchmark.html). Checks marked `-` have no requirement in that CIS version.
 
@@ -109,7 +111,9 @@ Some behaviour worth knowing:
 
 - **Block Public Access** is checked twice, as Security Hub does: once for the account setting (S3.1) and once per bucket, where a bucket counts as covered by its own setting or the account's (S3.8).
 - **Public S3 buckets** account for Block Public Access at both bucket and account level. A bucket with a public policy fails only if `RestrictPublicBuckets` is off, and a public ACL fails only if `IgnorePublicAcls` is off.
-- **SSH and RDP exposure** covers "all traffic" rules and port ranges that include 22 or 3389, not only rules for exactly those ports. Network ACLs are evaluated in rule-number order, so a deny entry placed before a broad allow protects the port.
+- **SSH and RDP exposure** covers "all traffic" rules and port ranges that include 22 or 3389, not only rules for exactly those ports. All source ranges that reach a port are merged, including the entries of managed prefix lists, so 0.0.0.0/1 plus 128.0.0.0/1 counts as the whole internet. Network ACLs are evaluated in rule-number order, for IPv4 and IPv6 entries, so a deny entry placed before a broad allow protects the port.
+- **Public bucket policies**: a `Principal: "*"` statement counts as public unless a condition restricts the caller (organization, account, principal, VPC, VPC endpoint or a specific IP range) with fixed values. Wildcards, policy variables, `...IfExists`, negated operators and 0.0.0.0/0 do not restrict, which matches how Security Hub S3.2 and S3.3 treat conditions.
+- **MFA delete** skips buckets with lifecycle rules, as Security Hub S3.20 does, because MFA delete cannot be used with them.
 - **CloudTrail** accepts classic and advanced event selectors. A trail with no selectors counts as logging all management events, which is the CloudTrail default.
 - **Root MFA** passes when the root user has no password, access keys or signing certificates, which is how accounts look after centralized root access management removes root credentials. The live run below found this case.
 - **KMS rotation** skips keys that cannot rotate: AWS managed, disabled, asymmetric, and imported key material.
@@ -121,6 +125,24 @@ On 29 Oct 2026 the scanner and [Prowler](https://github.com/prowler-cloud/prowle
 - 17 checks produced results in both tools, and all 17 agreed on pass or fail.
 - 12 checks could not be compared because the account had nothing for them to evaluate (no IAM users, KMS keys, instances or databases) or because Prowler skipped root checks for a root user without credentials. The EC2, KMS and RDS checks among them were verified separately against real resources, as described under Limitations.
 - The first comparison found one real gap: the bucket-level Block Public Access check claimed the Security Hub S3.1 mapping, which is the account-level setting. It is now two checks, `s3-account-block-public-access` (S3.1) and `s3-block-public-access` (S3.8).
+
+### Exposure that hides from simple checks
+
+A second live run on 29 Oct 2026 created seven test resources, scanned them with both tools, and deleted them. Ground truth for the S3 case came from S3's own `GetBucketPolicyStatus`, which returned `IsPublic: true`.
+
+| Case | Expected | This scanner | Prowler 5.46.0 |
+|---|---|---|---|
+| SSH from 0.0.0.0/0 | FAIL | FAIL | FAIL |
+| SSH from 0.0.0.0/1 and 128.0.0.0/1 | FAIL | FAIL | PASS |
+| SSH from a prefix list holding those two ranges | FAIL | FAIL | PASS |
+| SSH from 203.0.113.0/24 | PASS | PASS | PASS |
+| Network ACL allowing ::/0 | FAIL | FAIL | FAIL |
+| Bucket policy for Principal \* with only `aws:SecureTransport` | FAIL | FAIL | FAIL |
+| Access point with Block Public Access off | FAIL | FAIL | FAIL |
+
+## Benchmark
+
+`python benchmarks/corpus.py` builds 50 labelled cases in moto (30 that must fail, 20 that must pass, including the cases above and safe setups that look risky) and reports precision and recall. The current version scores 1.000 and 1.000. The commit before the detection gaps were closed scored precision 1.000 and recall 0.600: it missed 12 of the 30 exposures. The corpus was written by the same author as the checks, so it measures the cases it contains, not coverage of every AWS configuration.
 
 ## Use in CI
 
@@ -138,11 +160,12 @@ pip install -e '.[test]'
 pytest
 ```
 
-The 44 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
+The 55 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
 
 ## Limitations
 
 - The test suite runs against moto, which follows the AWS APIs closely but not exactly; for example, it returns no event selectors at all for a new trail. The scanner has also been run against one live account, a new account whose service control policy allows a single region, where the first run showed that account-wide calls must not be hard-coded to us-east-1, and that the root MFA check must allow for root credentials that were removed. On that account, a test EC2 instance, KMS key and RDS database were created with known misconfigurations: the IMDSv2, KMS rotation and the three RDS checks failed, then passed after each was fixed (RDS encryption stays failed, since it cannot be turned on in place), and the resources were deleted. IAM user checks and organization scans have only been tested in moto, because that account cannot hold IAM users with credentials or extra accounts.
+- Object-level ACLs are not checked; only bucket ACLs, bucket policies, Block Public Access and access points are.
 - The root MFA check reports whether MFA is on, not whether it is a hardware device (Security Hub IAM.6).
 - Results reflect the API at scan time. The IAM credential report can be up to four hours old.
 
