@@ -1,6 +1,6 @@
 # aws-misconfig-scanner
 
-A read-only Python scanner for AWS security misconfigurations. It runs 29 checks across IAM, S3, EC2/VPC, CloudTrail, KMS and RDS, and maps each one to its AWS Security Hub control and to the matching requirement in the CIS AWS Foundations Benchmark v5.0.0 and v3.0.0.
+A read-only Python scanner for AWS security misconfigurations. It runs 29 checks across IAM, S3, EC2/VPC, CloudTrail, KMS and RDS, and maps each one to its AWS Security Hub control and to the matching requirement in the CIS AWS Foundations Benchmark v5.0.0 and v3.0.0. It scans one account or every account in an AWS Organization.
 
 Each result says what is wrong, on which resource, and how to fix it. A check that cannot run because a permission is missing is reported as ERROR, so a gap in access never reads as a pass.
 
@@ -31,6 +31,12 @@ pip install .
 misconfig --profile audit --regions all
 misconfig --services s3,iam --format json > findings.json
 misconfig --list-checks
+
+# Every active account in the organization, four at a time
+misconfig --profile management --org --regions all --workers 4
+
+# Specific accounts through a dedicated role and external ID
+misconfig --accounts 111111111111,222222222222 --role-name MisconfigScannerRole --external-id "$EXTERNAL_ID"
 ```
 
 | Option | Meaning |
@@ -40,13 +46,25 @@ misconfig --list-checks
 | `--checks`, `--services` | run a subset |
 | `--format text\|json` | human report or machine-readable output with a summary |
 | `--show-pass` | include passing results in the text report |
+| `--org` | scan every active account in the organization; run it from the management account or a delegated administrator |
+| `--accounts` | scan these account ids instead |
+| `--role-name`, `--external-id` | role to assume in the other accounts (default `OrganizationAccountAccessRole`) and its external ID |
+| `--workers` | accounts scanned in parallel (default 4) |
 | `--fail-on SEVERITY` | exit 1 if any check fails at that severity or above, for CI |
 
-Account-wide checks (IAM, S3, the multi-region CloudTrail check) run once. Regional checks run in every selected region.
+Account-wide checks (IAM, S3, the multi-region CloudTrail check) run once per account. Regional checks run in every selected region, and `--regions all` is resolved separately in each account because opt-in regions differ.
+
+In a multi-account scan, the account you are signed in to is scanned with your own credentials, and every other account through the role. Each finding carries its account id, the text report groups results by account, and the JSON output adds a summary per account.
 
 ## Permissions
 
 The scanner only reads. [`examples/scanner-policy.json`](examples/scanner-policy.json) lists the 32 IAM actions it calls, taken from the code. `iam:GenerateCredentialReport` is the one that is not a Get, List or Describe call: it asks IAM to build the credential report that the user checks read.
+
+For an organization:
+
+- Deploy [`examples/scanner-role.yaml`](examples/scanner-role.yaml) to the member accounts with a CloudFormation StackSet. It creates `MisconfigScannerRole` with the same 32 read actions, trusted only by the scanning account and optionally bound to an external ID. Then run with `--role-name MisconfigScannerRole`.
+- Give the identity that runs the scanner [`examples/orchestrator-policy.json`](examples/orchestrator-policy.json): `organizations:ListAccounts` and `sts:AssumeRole` on that role.
+- The default `OrganizationAccountAccessRole` works without any setup in accounts created through Organizations, but it has administrator access, so a dedicated read-only role is the better choice.
 
 ## Checks
 
@@ -97,7 +115,7 @@ Some behaviour worth knowing:
 misconfig --regions all --fail-on HIGH --format json > findings.json
 ```
 
-The command exits 1 when a HIGH or CRITICAL check fails, so the pipeline stops.
+The command exits 1 when a HIGH or CRITICAL check fails, so the pipeline stops. It exits 2 if any account could not be scanned, for example because the role could not be assumed; that account is listed with an `assume-role` ERROR and the other accounts are still scanned.
 
 ## Development
 
@@ -107,12 +125,11 @@ pip install -e '.[test]'
 pytest
 ```
 
-The 32 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
+The 39 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
 
 ## Limitations
 
 - Tested against moto, not yet against a live account. moto follows the AWS APIs closely but not exactly; for example, it returns no event selectors at all for a new trail.
-- One account at a time. There is no AWS Organizations fan-out or role assumption across accounts yet.
 - The root MFA check reports whether MFA is on, not whether it is a hardware device (Security Hub IAM.6).
 - Results reflect the API at scan time. The IAM credential report can be up to four hours old.
 

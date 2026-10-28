@@ -50,6 +50,7 @@ class Finding:
     cis_v5: str = ""
     cis_v3: str = ""
     remediation: str = ""
+    account: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)

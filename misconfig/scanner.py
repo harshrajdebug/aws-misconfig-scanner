@@ -29,6 +29,17 @@ def _finding(chk: Check, status: Status, resource: str, region: str, detail: str
 
 
 def run(ctx: ScanContext, selected: list[Check]) -> list[Finding]:
+    findings = _run(ctx, selected)
+    try:
+        account = ctx.account_id
+    except (ClientError, BotoCoreError):
+        account = ""
+    for f in findings:
+        f.account = account
+    return findings
+
+
+def _run(ctx: ScanContext, selected: list[Check]) -> list[Finding]:
     findings: list[Finding] = []
     for chk in selected:
         regions = [ctx.global_region] if chk.scope == "global" else ctx.regions

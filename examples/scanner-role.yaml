@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Read-only role that aws-misconfig-scanner assumes in a member account. Deploy it to every
+  account with a StackSet; the actions match examples/scanner-policy.json.
+Parameters:
+  ScannerAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+    Description: Account that runs the scanner (usually the management or security account).
+  ExternalId:
+    Type: String
+    Default: ""
+    Description: Optional external ID the scanner must pass when assuming the role.
+Conditions:
+  UseExternalId: !Not [!Equals [!Ref ExternalId, ""]]
+Resources:
+  ScannerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: MisconfigScannerRole
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${ScannerAccountId}:root"
+            Action: sts:AssumeRole
+            Condition: !If
+              - UseExternalId
+              - StringEquals:
+                  sts:ExternalId: !Ref ExternalId
+              - !Ref AWS::NoValue
+      Policies:
+        - PolicyName: MisconfigScannerReadOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Resource: "*"
+                Action:
+                  - cloudtrail:DescribeTrails
+                  - cloudtrail:GetEventSelectors
+                  - cloudtrail:GetTrailStatus
+                  - ec2:DescribeFlowLogs
+                  - ec2:DescribeInstances
+                  - ec2:DescribeNetworkAcls
+                  - ec2:DescribeRegions
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                  - ec2:GetEbsEncryptionByDefault
+                  - iam:GenerateCredentialReport
+                  - iam:GetAccountPasswordPolicy
+                  - iam:GetAccountSummary
+                  - iam:GetCredentialReport
+                  - iam:GetPolicyVersion
+                  - iam:ListAttachedUserPolicies
+                  - iam:ListEntitiesForPolicy
+                  - iam:ListPolicies
+                  - iam:ListUserPolicies
+                  - iam:ListUsers
+                  - kms:DescribeKey
+                  - kms:GetKeyRotationStatus
+                  - kms:ListKeys
+                  - rds:DescribeDBInstances
+                  - s3:GetAccountPublicAccessBlock
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                  - s3:GetBucketLogging
+                  - s3:GetBucketPolicy
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketVersioning
+                  - s3:ListAllMyBuckets
+Outputs:
+  RoleArn:
+    Value: !GetAtt ScannerRole.Arn
