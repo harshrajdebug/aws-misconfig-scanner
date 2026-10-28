@@ -132,7 +132,7 @@ The 43 tests run against moto. Each check has a misconfigured resource that must
 
 ## Limitations
 
-- The test suite runs against moto, which follows the AWS APIs closely but not exactly; for example, it returns no event selectors at all for a new trail. The scanner has also been run against one live account, a new account whose service control policy allows a single region, where the first run showed that account-wide calls must not be hard-coded to us-east-1, and that the root MFA check must allow for root credentials that were removed. Organization scans have only been tested in moto.
+- The test suite runs against moto, which follows the AWS APIs closely but not exactly; for example, it returns no event selectors at all for a new trail. The scanner has also been run against one live account, a new account whose service control policy allows a single region, where the first run showed that account-wide calls must not be hard-coded to us-east-1, and that the root MFA check must allow for root credentials that were removed. On that account, a test EC2 instance, KMS key and RDS database were created with known misconfigurations: the IMDSv2, KMS rotation and the three RDS checks failed, then passed after each was fixed (RDS encryption stays failed, since it cannot be turned on in place), and the resources were deleted. IAM user checks and organization scans have only been tested in moto, because that account cannot hold IAM users with credentials or extra accounts.
 - The root MFA check reports whether MFA is on, not whether it is a hardware device (Security Hub IAM.6).
 - Results reflect the API at scan time. The IAM credential report can be up to four hours old.
 
