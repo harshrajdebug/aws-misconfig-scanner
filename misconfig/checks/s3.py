@@ -71,6 +71,42 @@ def _statements(policy: dict | None) -> list[dict]:
     return _as_list(policy.get("Statement", [])) if policy else []
 
 
+# Condition keys that limit who or where the caller is. A Principal "*" statement guarded
+# by one of these, with fixed values, is not open to the public.
+RESTRICTING_KEYS = {
+    "aws:sourceip", "aws:sourcevpc", "aws:sourcevpce", "aws:sourcearn", "aws:sourceaccount", "aws:sourceowner",
+    "aws:principalorgid", "aws:principalorgpaths", "aws:principalaccount", "aws:principalarn", "aws:userid",
+    "aws:username", "s3:dataaccesspointaccount", "s3:dataaccesspointarn",
+}
+ANYWHERE = {"0.0.0.0/0", "::/0"}
+
+
+def _fixed(value) -> bool:
+    """A value restricts only if it is literal: Security Hub treats wildcards and policy
+    variables in conditions as not restricting."""
+    return isinstance(value, str) and "*" not in value and "?" not in value and "${" not in value
+
+
+def _restricts_caller(condition: dict | None) -> bool:
+    for operator, clauses in (condition or {}).items():
+        # ...IfExists passes when the key is absent, so it does not restrict anyone.
+        if not isinstance(clauses, dict) or operator.lower().endswith("ifexists"):
+            continue
+        for key, values in clauses.items():
+            if key.lower() not in RESTRICTING_KEYS:
+                continue
+            values = _as_list(values)
+            if not values or not all(_fixed(v) for v in values):
+                continue
+            if key.lower() == "aws:sourceip" and any(v in ANYWHERE for v in values):
+                continue
+            if operator.lower().startswith(("stringnotequals", "stringnotlike", "notipaddress", "arnnotequals", "arnnotlike")):
+                # A negated match still admits almost every caller.
+                continue
+            return True
+    return False
+
+
 def _is_anyone(principal) -> bool:
     if principal == "*":
         return True
@@ -120,7 +156,7 @@ def public_bucket(ctx: ScanContext, region: str):
                     reasons.append(f"ACL grants {grant['Permission']} to {uri.rsplit('/', 1)[-1]}")
         if not bpa["RestrictPublicBuckets"]:
             for st in _statements(_policy(ctx, name, bucket_region)):
-                if st.get("Effect") == "Allow" and _is_anyone(st.get("Principal")) and not st.get("Condition"):
+                if st.get("Effect") == "Allow" and _is_anyone(st.get("Principal")) and not _restricts_caller(st.get("Condition")):
                     reasons.append("policy allows " + ", ".join(map(str, _as_list(st.get("Action", [])))) + " to anyone")
         if reasons:
             yield Status.FAIL, resource, "; ".join(reasons)
@@ -154,13 +190,44 @@ def tls_only(ctx: ScanContext, region: str):
             yield Status.FAIL, resource, "no policy statement denies plain HTTP requests"
 
 
+def _has_lifecycle(ctx: ScanContext, name: str, region: str) -> bool:
+    try:
+        return bool(ctx.client("s3", region).get_bucket_lifecycle_configuration(Bucket=name).get("Rules"))
+    except ClientError as exc:
+        if error_code(exc) == "NoSuchLifecycleConfiguration":
+            return False
+        raise
+
+
 @check("s3-mfa-delete", "S3 buckets have MFA delete enabled", "s3", Severity.LOW,
        "S3.20", "2.1.2", "2.1.2",
        "Enable versioning with MFA delete using the root user's MFA device.", scope="global")
 def mfa_delete(ctx: ScanContext, region: str):
     for name, bucket_region in _buckets(ctx):
+        # MFA delete cannot be used with lifecycle rules, so Security Hub S3.20 skips those buckets.
+        if _has_lifecycle(ctx, name, bucket_region):
+            continue
         versioning = ctx.client("s3", bucket_region).get_bucket_versioning(Bucket=name)
         if versioning.get("MFADelete") == "Enabled":
             yield Status.PASS, f"arn:aws:s3:::{name}", "MFA delete enabled"
         else:
             yield Status.FAIL, f"arn:aws:s3:::{name}", f"versioning {versioning.get('Status', 'off')}, MFA delete off"
+
+
+@check("s3-access-point-block-public-access", "S3 access points have Block Public Access enabled", "s3",
+       Severity.CRITICAL, "S3.19", "", "",
+       "Recreate the access point: its Block Public Access settings cannot be changed after it is created.")
+def access_point_block_public_access(ctx: ScanContext, region: str):
+    s3c = ctx.client("s3control", region)
+    paginator = s3c.get_paginator("list_access_points") if s3c.can_paginate("list_access_points") else None
+    pages = paginator.paginate(AccountId=ctx.account_id) if paginator else [s3c.list_access_points(AccountId=ctx.account_id)]
+    for page in pages:
+        for ap in page.get("AccessPointList", []):
+            detail = s3c.get_access_point(AccountId=ctx.account_id, Name=ap["Name"])
+            bpa = detail.get("PublicAccessBlockConfiguration", {})
+            missing = [k for k in BPA_KEYS if not bpa.get(k)]
+            resource = f"{ap.get('AccessPointArn', ap['Name'])} ({region})"
+            if missing:
+                yield Status.FAIL, resource, "not enabled on the access point: " + ", ".join(missing)
+            else:
+                yield Status.PASS, resource, "all four settings enabled"

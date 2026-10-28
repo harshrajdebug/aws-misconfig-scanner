@@ -206,3 +206,31 @@ def full_admin_policy(ctx: ScanContext, region: str):
                 yield Status.FAIL, policy["Arn"], "default version allows Action * on Resource *"
             else:
                 yield Status.PASS, policy["Arn"], "no full administrative statement"
+
+
+@check("iam-inline-admin-policy", "No inline policy allows *:*", "iam", Severity.HIGH,
+       "-", "", "",
+       "Replace inline policies that allow Action * on Resource * with managed policies scoped to the needed actions.",
+       scope="global")
+def inline_admin_policy(ctx: ScanContext, region: str):
+    iam = ctx.client("iam")
+    kinds = (
+        ("list_users", "Users", "UserName", "list_user_policies", "get_user_policy"),
+        ("list_groups", "Groups", "GroupName", "list_group_policies", "get_group_policy"),
+        ("list_roles", "Roles", "RoleName", "list_role_policies", "get_role_policy"),
+    )
+    for list_op, key, name_key, list_policies, get_policy in kinds:
+        for page in iam.get_paginator(list_op).paginate():
+            for identity in page[key]:
+                name = identity[name_key]
+                names = []
+                for ppage in iam.get_paginator(list_policies).paginate(**{name_key: name}):
+                    names.extend(ppage["PolicyNames"])
+                if not names:
+                    continue
+                admin = [n for n in names
+                         if grants_full_admin(getattr(iam, get_policy)(**{name_key: name, "PolicyName": n})["PolicyDocument"])]
+                if admin:
+                    yield Status.FAIL, identity["Arn"], "inline policy allows Action * on Resource *: " + ", ".join(admin)
+                else:
+                    yield Status.PASS, identity["Arn"], f"{len(names)} inline policies, none with full administrative access"

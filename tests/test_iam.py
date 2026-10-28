@@ -125,3 +125,25 @@ def test_full_admin_policy_only_when_attached(scan):
     r = scan("iam-full-admin-policy")
     assert r[attached] == (Status.FAIL, "default version allows Action * on Resource *")
     assert not any("unused-god-mode" in k for k in r)
+
+
+def test_inline_admin_policies_on_users_groups_and_roles(scan):
+    iam = client("iam")
+    admin = json.dumps({"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]})
+    narrow = json.dumps({"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"}]})
+    trust = json.dumps({"Version": "2012-10-17", "Statement": []})
+    iam.create_user(UserName="u-admin")
+    iam.put_user_policy(UserName="u-admin", PolicyName="everything", PolicyDocument=admin)
+    iam.create_group(GroupName="g-admin")
+    iam.put_group_policy(GroupName="g-admin", PolicyName="everything", PolicyDocument=admin)
+    iam.create_role(RoleName="r-admin", AssumeRolePolicyDocument=trust)
+    iam.put_role_policy(RoleName="r-admin", PolicyName="everything", PolicyDocument=admin)
+    iam.create_role(RoleName="r-narrow", AssumeRolePolicyDocument=trust)
+    iam.put_role_policy(RoleName="r-narrow", PolicyName="read", PolicyDocument=narrow)
+    r = scan("iam-inline-admin-policy")
+    failing = {k for k, (s, _) in r.items() if s is Status.FAIL}
+    assert any("user/u-admin" in k for k in failing)
+    assert any("group/g-admin" in k for k in failing)
+    assert any("role/r-admin" in k for k in failing)
+    assert all("r-narrow" not in k for k in failing)
+    assert any("r-narrow" in k and s is Status.PASS for k, (s, _) in r.items())

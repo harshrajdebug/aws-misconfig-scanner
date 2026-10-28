@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ipaddress
+
 from ..context import ScanContext
 from ..models import Severity, Status
 from ..registry import check
@@ -26,12 +28,37 @@ def _security_groups(ctx: ScanContext, region: str):
         yield from page["SecurityGroups"]
 
 
-def _open_admin_ports(group: dict, cidr_key: str, range_key: str, anywhere: str) -> list[int]:
-    ports: set[int] = set()
+def _prefix_list_cidrs(ctx: ScanContext, region: str, prefix_list_id: str) -> list[str]:
+    cache = ctx.__dict__.setdefault("_prefix_lists", {})
+    key = (region, prefix_list_id)
+    if key not in cache:
+        ec2 = ctx.client("ec2", region)
+        cidrs = []
+        for page in ec2.get_paginator("get_managed_prefix_list_entries").paginate(PrefixListId=prefix_list_id):
+            cidrs.extend(e["Cidr"] for e in page["Entries"])
+        cache[key] = cidrs
+    return cache[key]
+
+
+def _covers_everything(cidrs: list[str], version: int) -> bool:
+    """True if the CIDRs of one IP version together cover the whole address space, so
+    0.0.0.0/1 plus 128.0.0.0/1 counts the same as 0.0.0.0/0."""
+    nets = [n for n in (ipaddress.ip_network(c, strict=False) for c in cidrs) if n.version == version]
+    return any(n.prefixlen == 0 for n in ipaddress.collapse_addresses(nets))
+
+
+def _open_admin_ports(ctx: ScanContext, region: str, group: dict, version: int) -> list[int]:
+    reachable: dict[int, list[str]] = {p: [] for p in ADMIN_PORTS}
     for perm in group.get("IpPermissions", []):
-        if any(r.get(cidr_key) == anywhere for r in perm.get(range_key, [])):
-            ports.update(_covers_admin_port(perm.get("IpProtocol"), perm.get("FromPort"), perm.get("ToPort")))
-    return sorted(ports)
+        ports = _covers_admin_port(perm.get("IpProtocol"), perm.get("FromPort"), perm.get("ToPort"))
+        if not ports:
+            continue
+        cidrs = [r["CidrIp"] for r in perm.get("IpRanges", [])] + [r["CidrIpv6"] for r in perm.get("Ipv6Ranges", [])]
+        for pl in perm.get("PrefixListIds", []):
+            cidrs.extend(_prefix_list_cidrs(ctx, region, pl["PrefixListId"]))
+        for port in ports:
+            reachable[port].extend(cidrs)
+    return [p for p in ADMIN_PORTS if _covers_everything(reachable[p], version)]
 
 
 def _sg_resource(group: dict, region: str) -> str:
@@ -42,7 +69,7 @@ def _sg_resource(group: dict, region: str) -> str:
        "EC2.53", "5.3", "5.2", "Restrict port 22 and 3389 ingress to known address ranges, or use SSM Session Manager.")
 def sg_admin_ports_ipv4(ctx: ScanContext, region: str):
     for group in _security_groups(ctx, region):
-        ports = _open_admin_ports(group, "CidrIp", "IpRanges", ANY_V4)
+        ports = _open_admin_ports(ctx, region, group, 4)
         if ports:
             yield Status.FAIL, _sg_resource(group, region), f"0.0.0.0/0 can reach port(s) {ports}"
         else:
@@ -53,7 +80,7 @@ def sg_admin_ports_ipv4(ctx: ScanContext, region: str):
        "EC2.54", "5.4", "5.3", "Restrict port 22 and 3389 ingress to known IPv6 ranges, or use SSM Session Manager.")
 def sg_admin_ports_ipv6(ctx: ScanContext, region: str):
     for group in _security_groups(ctx, region):
-        ports = _open_admin_ports(group, "CidrIpv6", "Ipv6Ranges", ANY_V6)
+        ports = _open_admin_ports(ctx, region, group, 6)
         if ports:
             yield Status.FAIL, _sg_resource(group, region), f"::/0 can reach port(s) {ports}"
         else:
@@ -68,22 +95,28 @@ def nacl_admin_ports(ctx: ScanContext, region: str):
         resource = f"{acl['NetworkAclId']} ({region})"
         # NACL entries are evaluated in rule-number order and the first match wins, so an
         # admin port is exposed only if an allow entry matches before any deny entry does.
+        # IPv4 and IPv6 entries are separate rule sets.
         ingress = sorted((e for e in acl.get("Entries", []) if not e.get("Egress")), key=lambda e: e["RuleNumber"])
         exposed = []
-        for port in ADMIN_PORTS:
-            for entry in ingress:
-                if entry.get("CidrBlock") != ANY_V4:
-                    continue
-                pr = entry.get("PortRange", {})
-                if port not in _covers_admin_port(entry.get("Protocol"), pr.get("From"), pr.get("To")):
-                    continue
-                if entry.get("RuleAction") == "allow":
-                    exposed.append(port)
-                break
+        for anywhere, field in ((ANY_V4, "CidrBlock"), (ANY_V6, "Ipv6CidrBlock")):
+            for port in ADMIN_PORTS:
+                for entry in ingress:
+                    if entry.get(field) != anywhere:
+                        continue
+                    pr = entry.get("PortRange", {})
+                    if port not in _covers_admin_port(entry.get("Protocol"), pr.get("From"), pr.get("To")):
+                        continue
+                    if entry.get("RuleAction") == "allow":
+                        exposed.append((anywhere, port))
+                    break
         if exposed:
-            yield Status.FAIL, resource, f"0.0.0.0/0 allowed to port(s) {exposed}"
+            by_source = {}
+            for anywhere, port in exposed:
+                by_source.setdefault(anywhere, []).append(port)
+            detail = "; ".join(f"{src} allowed to port(s) {ports}" for src, ports in by_source.items())
+            yield Status.FAIL, resource, detail
         else:
-            yield Status.PASS, resource, "admin ports not allowed from 0.0.0.0/0"
+            yield Status.PASS, resource, "admin ports not allowed from 0.0.0.0/0 or ::/0"
 
 
 @check("ec2-default-sg-restricted", "Default security groups allow no traffic", "ec2", Severity.MEDIUM,
