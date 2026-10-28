@@ -109,6 +109,7 @@ Some behaviour worth knowing:
 - **Public S3 buckets** account for Block Public Access at both bucket and account level. A bucket with a public policy fails only if `RestrictPublicBuckets` is off, and a public ACL fails only if `IgnorePublicAcls` is off.
 - **SSH and RDP exposure** covers "all traffic" rules and port ranges that include 22 or 3389, not only rules for exactly those ports. Network ACLs are evaluated in rule-number order, so a deny entry placed before a broad allow protects the port.
 - **CloudTrail** accepts classic and advanced event selectors. A trail with no selectors counts as logging all management events, which is the CloudTrail default.
+- **Root MFA** passes when the root user has no password, access keys or signing certificates, which is how accounts look after centralized root access management removes root credentials. The live run below found this case.
 - **KMS rotation** skips keys that cannot rotate: AWS managed, disabled, asymmetric, and imported key material.
 
 ## Use in CI
@@ -127,11 +128,11 @@ pip install -e '.[test]'
 pytest
 ```
 
-The 41 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
+The 42 tests run against moto. Each check has a misconfigured resource that must fail and a hardened one that must pass, and the error path is tested with an AccessDenied client. The multi-account tests build an organization with member accounts, plant a misconfiguration in one member through an assumed role, and check that the finding is attributed to that account and not the others. Adding a check means writing a generator decorated with `@check(...)` in `misconfig/checks/` that yields `(status, resource, detail)`.
 
 ## Limitations
 
-- The test suite runs against moto, which follows the AWS APIs closely but not exactly; for example, it returns no event selectors at all for a new trail. The scanner has also been run against one live account, a new account whose service control policy allows a single region, where the first run showed that account-wide calls must not be hard-coded to us-east-1. Organization scans have only been tested in moto.
+- The test suite runs against moto, which follows the AWS APIs closely but not exactly; for example, it returns no event selectors at all for a new trail. The scanner has also been run against one live account, a new account whose service control policy allows a single region, where the first run showed that account-wide calls must not be hard-coded to us-east-1, and that the root MFA check must allow for root credentials that were removed. Organization scans have only been tested in moto.
 - The root MFA check reports whether MFA is on, not whether it is a hardware device (Security Hub IAM.6).
 - Results reflect the API at scan time. The IAM credential report can be up to four hours old.
 

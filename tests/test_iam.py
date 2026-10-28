@@ -70,6 +70,18 @@ def test_root_checks(scan, ctx):
     assert scan("iam-root-mfa")["root"][0] is Status.PASS
 
 
+def test_root_mfa_with_root_credentials_removed(scan, ctx):
+    ctx.__dict__["account_summary"] = {"AccountMFAEnabled": 0, "AccountPasswordPresent": 0,
+                                       "AccountAccessKeysPresent": 0, "AccountSigningCertificatesPresent": 0}
+    assert scan("iam-root-mfa")["root"] == (Status.PASS, "root user has no password, access keys or signing certificates")
+    ctx.__dict__["account_summary"] = {"AccountMFAEnabled": 0, "AccountPasswordPresent": 1,
+                                       "AccountAccessKeysPresent": 0, "AccountSigningCertificatesPresent": 0}
+    assert scan("iam-root-mfa")["root"] == (Status.FAIL, "root user has no MFA device")
+    # A summary without the credential keys is treated as credentials present.
+    ctx.__dict__["account_summary"] = {"AccountMFAEnabled": 0}
+    assert scan("iam-root-mfa")["root"][0] is Status.FAIL
+
+
 def test_password_policy(scan):
     r = scan("iam-password-length")["account-password-policy"]
     assert r == (Status.FAIL, "no account password policy is set")

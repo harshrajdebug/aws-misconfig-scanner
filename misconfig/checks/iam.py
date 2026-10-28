@@ -38,8 +38,14 @@ def root_access_key(ctx: ScanContext, region: str):
 @check("iam-root-mfa", "Root user has MFA enabled", "iam", Severity.CRITICAL,
        "IAM.9", "1.4", "1.5", "Enable MFA on the root user, preferably a hardware or passkey device.", scope="global")
 def root_mfa(ctx: ScanContext, region: str):
-    if ctx.account_summary.get("AccountMFAEnabled", 0):
+    summary = ctx.account_summary
+    if summary.get("AccountMFAEnabled", 0):
         yield Status.PASS, "root", "root MFA enabled"
+    elif not any(summary.get(k, 1) for k in ("AccountPasswordPresent", "AccountAccessKeysPresent",
+                                            "AccountSigningCertificatesPresent")):
+        # Accounts under centralized root access management can have their root credentials
+        # removed. With no password, access key or certificate, nothing can sign in as root.
+        yield Status.PASS, "root", "root user has no password, access keys or signing certificates"
     else:
         yield Status.FAIL, "root", "root user has no MFA device"
 
